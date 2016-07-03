@@ -1,0 +1,166 @@
+diff -prudw /mnt/data/sunxi/A20/lichee/linux-3.3/drivers/video/sun7i/disp/de_bsp/de/disp_layer.c drivers/video/sun7i/disp/de_bsp/de/disp_layer.c
+--- /mnt/data/sunxi/A20/lichee/linux-3.3/drivers/video/sun7i/disp/de_bsp/de/disp_layer.c	2013-05-22 01:38:26.000000000 +0000
++++ drivers/video/sun7i/disp/de_bsp/de/disp_layer.c	2016-07-03 18:34:56.000000000 +0000
+@@ -817,9 +817,9 @@ __s32 BSP_disp_layer_get_screen_window(_
+     layer_man = &gdisp.screen[sel].layer_manage[hid];
+     if(layer_man->status & LAYER_USED)
+     {
+-		regn->x = layer_man->para.scn_win.x;
++		regn->x = layer_man->para.scn_win.x * 854 / 800;
+ 		regn->y = layer_man->para.scn_win.y;
+-		regn->width = layer_man->para.scn_win.width;
++		regn->width = layer_man->para.scn_win.width * 854 / 800;
+ 		regn->height = layer_man->para.scn_win.height;
+ 
+         return DIS_SUCCESS;
+@@ -831,7 +831,11 @@ __s32 BSP_disp_layer_get_screen_window(_
+     }
+ }
+ 
+-    
++// mittorn: calculate pixel aspect ratio
++static inline int process_x( int x )
++{
++    return x * 400 / 427;
++}
+ 
+ __s32 BSP_disp_layer_set_para(__u32 sel, __u32 hid,__disp_layer_info_t *player)
+ {
+@@ -850,6 +854,38 @@ __s32 BSP_disp_layer_set_para(__u32 sel,
+         player->mode = DISP_LAYER_WORK_MODE_SCALER;
+     }
+     
++    // mittorn: force hardware scaler on LCD to fix non-square pixel
++    // set lcd and fb resolution to 864x480 to make it work
++    // after, set android screen resolution to 854x480 (correct 16x9 mode)
++    // it will show 854x480+5+0 square
++    if( sel == 0 && ( player->mode == DISP_LAYER_WORK_MODE_NORMAL || player->mode == DISP_LAYER_WORK_MODE_SCALER ) )
++    {
++        player->mode = DISP_LAYER_WORK_MODE_SCALER;
++        // debug
++        //if( hid > 0 )
++            //DE_WRN("video layer: %d %d %d %d\n", player->scn_win.x, player->src_win.x, player->scn_win.width, player->src_win.width );
++
++        // when android resolution set to 854x480, it outputs image at the middle
++        // (864 - 854)/2
++        if( player->src_win.x == player->scn_win.x || hid > 0 )
++            player->scn_win.x = process_x( player->scn_win.x ) - 5;
++
++        // prevent changing x if it is already changed
++        if( player->src_win.width == player->scn_win.width )
++            player->scn_win.width = process_x( player->scn_win.width );
++
++        // try guess correct value for stock CedarX decoder
++        // it seems to pull back value from layer
++        // 800 + ( 854 - 800 ) / 2
++        if( hid )
++            player->scn_win.width = player->scn_win.width * 800 / 827;
++
++        // prevent video move outside of screen
++        if( hid && ( player->scn_win.width + player->scn_win.x > 800 ) )
++            player->scn_win.x -= 800 - ( player->scn_win.width + player->scn_win.x );
++    }
++
++    
+     if(layer_man->status & LAYER_USED)
+     {
+     	BSP_disp_cfg_start(sel);
+@@ -1030,6 +1066,10 @@ __s32 BSP_disp_layer_get_para(__u32 sel,
+     if(layer_man->status & LAYER_USED)
+     {
+ 		memcpy(player, &layer_man->para, sizeof(__disp_layer_info_t));
++		//if( sel == 0 && ( player->mode == DISP_LAYER_WORK_MODE_NORMAL || player->mode == DISP_LAYER_WORK_MODE_SCALER ) )
++		//    player->scn_win.width = player->scn_win.width * 854 / 800,
++		//    player->scn_win.x = player->scn_win.x * 800 / 800;
++
+ 
+ 		return DIS_SUCCESS;
+     }
+diff -prudw /mnt/data/sunxi/A20/lichee/linux-3.3/drivers/video/sun7i/disp/dev_fb.c drivers/video/sun7i/disp/dev_fb.c
+--- /mnt/data/sunxi/A20/lichee/linux-3.3/drivers/video/sun7i/disp/dev_fb.c	2013-05-22 01:38:26.000000000 +0000
++++ drivers/video/sun7i/disp/dev_fb.c	2016-07-02 15:45:23.000000000 +0000
+@@ -161,14 +161,14 @@ __s32 parser_disp_init_para(__disp_init_
+ 	if(OSAL_Script_FetchParser_Data("disp_init", "fb0_width", &value, 1) < 0)
+ 	{
+ 		__wrn("fetch script data disp_init.fb0_width fail\n");
+-		return -1;
++		value = 864;
+ 	}
+ 	init_para->fb_width[0]= value;
+ 
+ 	if(OSAL_Script_FetchParser_Data("disp_init", "fb0_height", &value, 1) < 0)
+ 	{
+ 		__wrn("fetch script data disp_init.fb0_height fail\n");
+-		return -1;
++		value = 480;
+ 	}
+ 	init_para->fb_height[0]= value;
+ 
+@@ -176,43 +176,49 @@ __s32 parser_disp_init_para(__disp_init_
+         if(OSAL_Script_FetchParser_Data("disp_init", "fb1_framebuffer_num", &value, 1) < 0)
+         {
+                 __wrn("fetch script data disp_init.fb1_framebuffer_num fail\n");
+-                return -1;
++                //return -1;
+         }
++        else
+         init_para->buffer_num[1]= value;
+ 
+         if(OSAL_Script_FetchParser_Data("disp_init", "fb1_format", &value, 1) < 0)
+         {
+                 __wrn("fetch script data disp_init.fb1_format fail\n");
+-                return -1;
++                //return -1;
+         }
++        else
+         init_para->format[1]= value;
+ 
+         if(OSAL_Script_FetchParser_Data("disp_init", "fb1_pixel_sequence", &value, 1) < 0)
+         {
+                 __wrn("fetch script data disp_init.fb1_pixel_sequence fail\n");
+-                return -1;
++                //return -1;
+         }
++        else
+         init_para->seq[1]= value;
+ 
+         if(OSAL_Script_FetchParser_Data("disp_init", "fb1_scaler_mode_enable", &value, 1) < 0)
+         {
+                 __wrn("fetch script data disp_init.fb1_scaler_mode_enable fail\n");
+-                return -1;
++                //return -1;
+         }
++        else
+         init_para->scaler_mode[1]= value;
+ 
+ 	if(OSAL_Script_FetchParser_Data("disp_init", "fb1_width", &value, 1) < 0)
+ 	{
+ 		__wrn("fetch script data disp_init.fb1_width fail\n");
+-		return -1;
++		//return -1;
+ 	}
++	else
+ 	init_para->fb_width[1]= value;
+ 
+ 	if(OSAL_Script_FetchParser_Data("disp_init", "fb1_height", &value, 1) < 0)
+ 	{
+ 		__wrn("fetch script data disp_init.fb1_height fail\n");
+-		return -1;
++		//return -1;
+ 	}
++	else
+ 	init_para->fb_height[1]= value;
+ 
+ 
+@@ -1390,9 +1396,9 @@ __s32 Fb_Init(__u32 from)
+                 	g_fbi.fbinfo[i]->par     = &g_fbi;
+                 	g_fbi.fbinfo[i]->var.xoffset         = 0;
+                 	g_fbi.fbinfo[i]->var.yoffset         = 0;
+-                	g_fbi.fbinfo[i]->var.xres            = 800;
++                	g_fbi.fbinfo[i]->var.xres            = 854;
+                 	g_fbi.fbinfo[i]->var.yres            = 480;
+-                	g_fbi.fbinfo[i]->var.xres_virtual    = 800;
++                	g_fbi.fbinfo[i]->var.xres_virtual    = 854;
+                 	g_fbi.fbinfo[i]->var.yres_virtual    = 480*2;
+                 	g_fbi.fbinfo[i]->var.nonstd = 0;
+                         g_fbi.fbinfo[i]->var.bits_per_pixel = 32;
